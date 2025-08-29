@@ -77,6 +77,8 @@ def get_args_parser():
     parser.add_argument('--giou_loss_coef', default=2, type=float)
     parser.add_argument('--eos_coef', default=0.1, type=float,
                         help="Relative classification weight of the no-object class")
+    #
+    parser.add_argument('--sparse_target', action='store_true')
 
     # dataset parameters
     parser.add_argument('--dataset_file', default='coco')

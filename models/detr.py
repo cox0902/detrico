@@ -37,11 +37,12 @@ class DETR(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.token_embed = nn.Embedding(90, hidden_dim)
         self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
         self.backbone = backbone
         self.aux_loss = aux_loss
 
-    def forward(self, samples: NestedTensor):
+    def forward(self, samples: NestedTensor, targets):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -58,11 +59,17 @@ class DETR(nn.Module):
         """
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
+
+        codes = torch.stack([v["code"] for v in targets])
+        # print(codes.shape)
+
         features, pos = self.backbone(samples)
 
         src, mask = features[-1].decompose()
         assert mask is not None
-        hs = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])[0]
+        hs = self.transformer(self.input_proj(src), mask, 
+                              self.token_embed(codes.permute(1, 0)), codes == 0, 
+                              self.query_embed.weight, pos[-1])[0]
         # print("hs:", hs.shape)
         outputs_class = self.class_embed(hs)
         outputs_coord = self.bbox_embed(hs).sigmoid()
@@ -86,7 +93,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses):
+    def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses, sparse_target):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -101,6 +108,7 @@ class SetCriterion(nn.Module):
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
         self.losses = losses
+        self.sparse_target = sparse_target
         empty_weight = torch.ones(self.num_classes + 1)
         empty_weight[-1] = self.eos_coef
         self.register_buffer('empty_weight', empty_weight)
@@ -226,8 +234,12 @@ class SetCriterion(nn.Module):
         # print(indices)
 
         num_queries = outputs["pred_logits"].shape[1]
-        indices = [(torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64), 
-                    torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
+        if not self.sparse_target:
+            indices = [(torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64), 
+                        torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
+        else:
+            indices = [(torch.arange(num_queries, dtype=torch.int64)[v["code"] > 7],
+                        torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
 
         # print(indices)
         # assert False
@@ -360,7 +372,8 @@ def build(args):
     if args.masks:
         losses += ["masks"]
     criterion = SetCriterion(num_classes, matcher=matcher, weight_dict=weight_dict,
-                             eos_coef=args.eos_coef, losses=losses)
+                             eos_coef=args.eos_coef, losses=losses, 
+                             sparse_target=args.sparse_target)
     criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
     if args.masks:

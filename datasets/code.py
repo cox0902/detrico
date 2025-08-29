@@ -83,7 +83,8 @@ class ImageCodeDataset(Dataset):
             "labels": torch.as_tensor(labels, dtype=torch.int64),
             "image_id": torch.as_tensor([img_idx], dtype=torch.int64),
             "orig_size": torch.as_tensor([w, h]),
-            "size": torch.as_tensor([w, h])
+            "size": torch.as_tensor([w, h]),
+            "code": torch.as_tensor(code, dtype=torch.int64)
         }
 
 
