@@ -238,7 +238,7 @@ class SetCriterion(nn.Module):
             indices = [(torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64), 
                         torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
         else:
-            indices = [(torch.arange(num_queries, dtype=torch.int64)[v["code"] > 7],
+            indices = [(torch.arange(num_queries, dtype=torch.int64)[(v["code"] > 7).cpu()],
                         torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
 
         # print(indices)
