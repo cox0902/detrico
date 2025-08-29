@@ -29,21 +29,17 @@ class ImageCodeDataset(Dataset):
         self.rects = self.hi["rects"]
 
         self.hc = h5py.File(code_path, "r")
-        self.idx = self.hc["idx"]
-        self.pid = self.hc["pid"]
-        self.piv = self.hc["piv"]
+        self.max_len = self.hc.attrs["max_len"]
+        self.codes = self.hc["ivs"]
+        self.code_lens = self.hc["les"]
+        self.ids = self.hc["ids"]
 
-        if split is not None:
-            self.split = np.unique(self.idx[split])
-            # print(self.split)
-        else:
-            self.split = np.unique(self.idx[:])
-        assert len(self.split) <= len(self.images), (len(self.split), len(self.images))
+        self.split = split
     
     def __len__(self) -> int:
         if self.split is not None:
             return len(self.split)
-        return len(self.images) 
+        return len(self.codes) 
     
     def __idx(self, i: int) -> int:
         if self.split is not None:
@@ -53,43 +49,39 @@ class ImageCodeDataset(Dataset):
     def __getitem__(self, index: int) -> Dict:
         w, h = 256, 256
 
-        img_idx = self.__idx(index)
+        img_idx = code_idx = self.__idx(index)
         # image = torch.from_numpy(self.images[img_idx])
         image = self.images[img_idx]
         if self.transform is not None:
             image = torch.from_numpy(image)
             image = self.transform(image)
 
-        boxes, labels = [], []
+        code = self.codes[code_idx]
 
-        indices = np.where(self.idx[:] == img_idx)[0]
-        # print(indices)
-        for i in indices:
-            pid = self.pid[i]
-            piv = self.piv[i]
-            assert pid != -1
-
-            logical = ((self.labels[:, 0] == img_idx) & (self.labels[:, 1] == pid))
-
-            loc = np.where(logical)
-            if len(loc[0]) == 0:
+        rects = np.stack((np.zeros_like(code, dtype=np.float32), ) * 4, axis=-1)
+        ids = self.ids[code_idx]
+        ivs = self.codes[code_idx]
+        for i, (each_id, each_iv) in enumerate(zip(ids, ivs)):
+            if each_iv <= 7:
                 continue
+            loc = np.where(np.logical_and(
+                self.labels[:, 0] == img_idx,
+                self.labels[:, 1] == each_id
+            ))
+            assert len(loc[0]) == 1, code
+            rects[i] = self.rects[loc[0]]
 
-            assert len(loc[0]) == 1
-            rect = self.rects[loc[0]][0]
-            boxes.append(rect)
+        boxes = rects[code > 7]
+        labels = code[code > 7]
 
-            category_id = piv - 8
-            labels.append(category_id)
-
-        boxes = torch.as_tensor(np.array(boxes), dtype=torch.float32)
+        boxes = torch.as_tensor(boxes, dtype=torch.float32)
         boxes = box_xyxy_to_cxcywh(boxes)
         boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32)
 
         return image, {
             "boxes": torch.as_tensor(boxes, dtype=torch.float32),
             "labels": torch.as_tensor(labels, dtype=torch.int64),
-            "image_id": torch.as_tensor([img_idx]),
+            "image_id": torch.as_tensor([img_idx], dtype=torch.int64),
             "orig_size": torch.as_tensor([w, h]),
             "size": torch.as_tensor([w, h])
         }

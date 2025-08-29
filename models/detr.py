@@ -63,7 +63,7 @@ class DETR(nn.Module):
         src, mask = features[-1].decompose()
         assert mask is not None
         hs = self.transformer(self.input_proj(src), mask, self.query_embed.weight, pos[-1])[0]
-        print("hs:", hs.shape)
+        # print("hs:", hs.shape)
         outputs_class = self.class_embed(hs)
         outputs_coord = self.bbox_embed(hs).sigmoid()
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
@@ -219,10 +219,18 @@ class SetCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
+        # outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets)
+        # indices = self.matcher(outputs_without_aux, targets)
+        # print(indices)
+
+        num_queries = outputs["pred_logits"].shape[1]
+        indices = [(torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64), 
+                    torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
+
+        # print(indices)
+        # assert False
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
