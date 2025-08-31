@@ -72,7 +72,7 @@ class ImageCodeDataset(Dataset):
             rects[i] = self.rects[loc[0]]
 
         boxes = rects[code > 7]
-        labels = code[code > 7]
+        labels = code[code > 7] - 8
 
         boxes = torch.as_tensor(boxes, dtype=torch.float32)
         boxes = box_xyxy_to_cxcywh(boxes)
