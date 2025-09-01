@@ -21,7 +21,7 @@ class ImageCodeDataset(Dataset):
         ])
         self.debug = []
 
-        self.num_classes = 82
+        self.num_classes = 1
 
         self.hi = h5py.File(image_path, "r")
         self.images = self.hi["images"]
@@ -72,7 +72,7 @@ class ImageCodeDataset(Dataset):
             rects[i] = self.rects[loc[0]]
 
         boxes = rects[code > 7]
-        labels = code[code > 7] - 8
+        labels = np.zeros_like(code[code > 7])
 
         boxes = torch.as_tensor(boxes, dtype=torch.float32)
         boxes = box_xyxy_to_cxcywh(boxes)

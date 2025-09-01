@@ -333,7 +333,7 @@ def build(args):
     if args.dataset_file == "coco":
         num_classes = 91
     elif args.dataset_file == "code":
-        num_classes = 82 
+        num_classes = 1 
     elif args.dataset_file == "coco_panoptic":
         # for panoptic, we just add a num_classes that is large enough to hold
         # max_obj_id + 1, but the exact value doesn't really matter
