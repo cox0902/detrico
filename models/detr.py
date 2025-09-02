@@ -12,7 +12,7 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        is_dist_avail_and_initialized)
 
 from .backbone import build_backbone
-from .matcher import build_matcher
+from .matcher import build_matcher, OrderMatcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .transformer import build_transformer
@@ -105,6 +105,7 @@ class SetCriterion(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.matcher = matcher
+        self.order_matcher = OrderMatcher()
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
         self.losses = losses
@@ -227,19 +228,21 @@ class SetCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        # outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
+        outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
         # indices = self.matcher(outputs_without_aux, targets)
         # print(indices)
 
-        num_queries = outputs["pred_logits"].shape[1]
-        if not self.sparse_target:
-            indices = [(torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64), 
-                        torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
-        else:
-            indices = [(torch.arange(num_queries, dtype=torch.int64)[(v["code"] > 7).cpu()],
-                        torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
+        # num_queries = outputs["pred_logits"].shape[1]
+        # if not self.sparse_target:
+        #     indices = [(torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64), 
+        #                 torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
+        # else:
+        #     indices = [(torch.arange(num_queries, dtype=torch.int64)[(v["code"] > 7).cpu()],
+        #                 torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
+
+        indices = self.order_matcher(outputs_without_aux, targets)
 
         # print(indices)
         # assert False
@@ -260,6 +263,7 @@ class SetCriterion(nn.Module):
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
                 # indices = self.matcher(aux_outputs, targets)
+                indices = self.order_matcher(aux_outputs, targets)
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.

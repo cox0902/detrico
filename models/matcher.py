@@ -9,6 +9,25 @@ from torch import nn
 from util.box_ops import box_cxcywh_to_xyxy, generalized_box_iou
 
 
+class OrderMatcher(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+        
+    @torch.no_grad()
+    def forward(self, outputs, targets):
+        num_queries = outputs["pred_logits"].shape[1]
+        logits = torch.softmax(outputs["pred_logits"], dim=-1)
+        labels = logits[:, :, 0]
+        indices = []
+        for v in targets:
+            count = min(len(v["boxes"]), num_queries)
+            prd_indices = labels.topk(count).indices.sort().values[0]
+            tgt_indices = torch.arange(count, dtype=torch.int64)
+            indices.append((prd_indices, tgt_indices))
+        return indices
+
+
 class HungarianMatcher(nn.Module):
     """This class computes an assignment between the targets and the predictions of the network
 
