@@ -5,6 +5,7 @@ import torch
 from torch.utils.data import Dataset
 import torchvision.transforms.v2 as T
 from util.box_ops import box_xyxy_to_cxcywh
+from util.tree import TreeNode
 
 
 class ImageCodeDataset(Dataset):
@@ -12,7 +13,8 @@ class ImageCodeDataset(Dataset):
     def __init__(self,
                  image_path: str,
                  code_path: str,
-                 split):
+                 split,
+                 max_drop: float = 0):
         super().__init__()
         self.transform = T.Compose([
             T.ToDtype(torch.float, scale=True),
@@ -21,6 +23,7 @@ class ImageCodeDataset(Dataset):
         ])
         self.debug = []
 
+        self.max_drop = max_drop
         self.num_classes = 1
 
         self.hi = h5py.File(image_path, "r")
@@ -61,6 +64,21 @@ class ImageCodeDataset(Dataset):
         rects = np.stack((np.zeros_like(code, dtype=np.float32), ) * 4, axis=-1)
         ids = self.ids[code_idx]
         ivs = self.codes[code_idx]
+
+        if self.max_drop > 0:
+            # print("src:" + "".join([f"{each:4}" for each in ivs[ivs > 0]]))
+            count = int(self.max_drop * len(code[code > 7]))
+            if 1 < count < len(code[code > 7]):
+                n_drop = np.random.randint(0, count)
+                if n_drop > 0:
+                    tree = TreeNode.build_tree(ivs, ids)
+                    nodes = tree.ravel()
+                    nodes = np.random.choice(nodes[1:], n_drop, replace=False)
+                    for each in nodes:
+                        each.delete()
+                    ivs, ids = tree.build_list_with_mask()
+                    # print("dst:" + "".join([f"{each:4}" for each in ivs]))
+
         for i, (each_id, each_iv) in enumerate(zip(ids, ivs)):
             if each_iv <= 7:
                 continue
@@ -75,7 +93,7 @@ class ImageCodeDataset(Dataset):
         if self.num_classes == 1:
             labels = np.zeros_like(code[code > 7])
         else:
-            labels = code[code > 7] - self.num_classes
+            labels = code[code > 7] - 8
 
         boxes = torch.as_tensor(boxes, dtype=torch.float32)
         boxes = box_xyxy_to_cxcywh(boxes)
@@ -95,5 +113,7 @@ def build(image_set, args):
     if image_set == "val":
         image_set = "valid"
     split = np.load(args.split_path)
-    dataset = ImageCodeDataset(args.image_path, args.code_path, split[image_set])
+    max_drop = 0 if image_set != "train" else args.max_drop
+    dataset = ImageCodeDataset(args.image_path, args.code_path, split[image_set],
+                               max_drop=max_drop)
     return dataset
