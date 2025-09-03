@@ -38,6 +38,7 @@ def get_args_parser():
                         help="If true, we replace stride with dilation in the last convolutional block (DC5)")
     parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned'),
                         help="Type of positional embedding to use on top of the image features")
+    parser.add_argument('--query_embedding', default='sine', type=str, choices=('sine', 'learned'))
 
     # * Transformer
     parser.add_argument('--enc_layers', default=6, type=int,
@@ -63,6 +64,8 @@ def get_args_parser():
     # Loss
     parser.add_argument('--no_aux_loss', dest='aux_loss', action='store_false',
                         help="Disables auxiliary decoding losses (loss at each layer)")
+    parser.add_argument('--mix_aux_loss', type=int, default=0)
+
     # * Matcher
     parser.add_argument('--set_cost_class', default=1, type=float,
                         help="Class coefficient in the matching cost")
@@ -77,6 +80,8 @@ def get_args_parser():
     parser.add_argument('--giou_loss_coef', default=2, type=float)
     parser.add_argument('--eos_coef', default=0.1, type=float,
                         help="Relative classification weight of the no-object class")
+    parser.add_argument("--kl_loss", action="store_true")
+    parser.add_argument("--iou_loss", default="giou", type=str)
     #
     parser.add_argument('--sparse_target', action='store_true')
 
@@ -88,6 +93,7 @@ def get_args_parser():
     parser.add_argument("--image-path", type=str)
     parser.add_argument("--code-path", type=str)
     parser.add_argument("--split-path", type=str)
+    parser.add_argument("--num_classes", type=int)
 
     parser.add_argument('--output_dir', default='',
                         help='path where to save, empty for no saving')
@@ -200,7 +206,7 @@ def main(args):
             sampler_train.set_epoch(epoch)
         train_stats = train_one_epoch(
             model, criterion, data_loader_train, optimizer, device, epoch,
-            args.clip_max_norm)
+            args.clip_max_norm, args.kl_loss)
         lr_scheduler.step()
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']

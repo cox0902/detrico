@@ -2,9 +2,11 @@
 """
 DETR model and criterion classes.
 """
+import math
 import torch
 import torch.nn.functional as F
 from torch import nn
+import torchvision
 
 from util import box_ops
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
@@ -12,15 +14,38 @@ from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        is_dist_avail_and_initialized)
 
 from .backbone import build_backbone
-from .matcher import build_matcher, OrderMatcher
+from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .transformer import build_transformer
 
 
+class SineEmbedding(nn.Module):
+    def __init__(self,
+                 emb_size: int,
+                 dropout: float = 0.1,
+                 maxlen: int = 5000):
+        super(SineEmbedding, self).__init__()
+        
+        den = torch.exp(- torch.arange(0, emb_size, 2)* math.log(10000) / emb_size)
+        pos = torch.arange(0, maxlen).reshape(maxlen, 1)
+        pos_embedding = torch.zeros((maxlen, emb_size))
+        pos_embedding[:, 0::2] = torch.sin(pos * den)
+        pos_embedding[:, 1::2] = torch.cos(pos * den)
+        pos_embedding = pos_embedding.unsqueeze(-2)
+
+        self.dropout = nn.Dropout(dropout)
+        self.register_buffer('pos_embedding', pos_embedding)
+
+    def forward(self, token_embedding):
+        # return self.dropout(token_embedding + self.pos_embedding[:token_embedding.size(0), :])
+        return self.pos_embedding[:token_embedding.size(0), :]
+    
+
 class DETR(nn.Module):
     """ This is the DETR module that performs object detection """
-    def __init__(self, backbone, transformer, num_classes, num_queries, aux_loss=False):
+    def __init__(self, backbone, transformer, num_classes, num_queries, aux_loss=False,
+                 query_embedding="sine"):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -36,7 +61,10 @@ class DETR(nn.Module):
         hidden_dim = transformer.d_model
         self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
-        self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        if query_embedding == "sine":
+            self.query_embed = SineEmbedding(hidden_dim)
+        else:
+            self.query_embed = nn.Embedding(num_queries, hidden_dim)
         self.token_embed = nn.Embedding(90, hidden_dim)
         self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
         self.backbone = backbone
@@ -67,9 +95,15 @@ class DETR(nn.Module):
 
         src, mask = features[-1].decompose()
         assert mask is not None
-        hs = self.transformer(self.input_proj(src), mask, 
-                              self.token_embed(codes.permute(1, 0)), codes == 0, 
-                              self.query_embed.weight, pos[-1])[0]
+        if type(self.query_embed) == SineEmbedding:
+            toked = self.token_embed(codes.permute(1, 0))
+            hs = self.transformer(self.input_proj(src), mask, 
+                                  toked, codes == 0, 
+                                  self.query_embed(toked), pos[-1])[0]
+        else:
+            hs = self.transformer(self.input_proj(src), mask, 
+                                self.token_embed(codes.permute(1, 0)), codes == 0, 
+                                self.query_embed.weight, pos[-1])[0]
         # print("hs:", hs.shape)
         outputs_class = self.class_embed(hs)
         outputs_coord = self.bbox_embed(hs).sigmoid()
@@ -87,13 +121,44 @@ class DETR(nn.Module):
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
 
+def compute_kl_loss(true_means, true_log_vars, pred_means, pred_log_vars):
+    """
+    计算多个独立二维高斯分布的KL散度，并返回平均值。
+    
+    参数:
+        true_means: 真实分布的均值，形状为 [n, 2]
+        true_log_vars: 真实分布的方差的对数，形状为 [n, 2] (即 log(σ^2))
+        pred_means: 预测分布的均值，形状为 [n, 2]
+        pred_log_vars: 预测分布的方差的对数，形状为 [n, 2] (即 log(σ^2))
+    
+    返回:
+        kl_loss: 标量，所有分布KL散度的平均值
+    """
+    # 确保方差非负（通过指数运算）
+    true_vars = torch.exp(true_log_vars)  # 形状 [n, 2]
+    pred_vars = torch.exp(pred_log_vars)  # 形状 [n, 2]
+    
+    # 计算KL散度的三个项（按维度独立计算）
+    term1 = pred_log_vars - true_log_vars  # log(σ2^2 / σ1^2)
+    term2 = true_vars / pred_vars         # σ1^2 / σ2^2
+    term3 = (pred_means - true_means)**2 / pred_vars  # (μ2 - μ1)^2 / σ2^2
+    
+    # 合并所有项，并沿特征维度（dim=1）求和
+    kl_per_dist = 0.5 * (term1 + term2 + term3 - 1).sum(dim=1)  # 形状 [n]
+    
+    # 对所有分布取平均值
+    kl_loss = torch.mean(kl_per_dist)
+    return kl_loss
+
+
 class SetCriterion(nn.Module):
     """ This class computes the loss for DETR.
     The process happens in two steps:
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses, sparse_target):
+    def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses, 
+                 sparse_target, mix_aux_loss, kl_loss, iou_loss):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -105,14 +170,19 @@ class SetCriterion(nn.Module):
         super().__init__()
         self.num_classes = num_classes
         self.matcher = matcher
-        self.order_matcher = OrderMatcher()
+        # self.order_matcher = OrderMatcher()
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
         self.losses = losses
         self.sparse_target = sparse_target
+        self.mix_aux_loss = mix_aux_loss
         empty_weight = torch.ones(self.num_classes + 1)
         empty_weight[-1] = self.eos_coef
         self.register_buffer('empty_weight', empty_weight)
+        self.kl_loss = kl_loss
+        self.iou_loss = iou_loss
+        if self.kl_loss:
+            self.log_vars = nn.Parameter(torch.zeros((2, ), requires_grad=True))
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (NLL)
@@ -164,10 +234,33 @@ class SetCriterion(nn.Module):
         losses = {}
         losses['loss_bbox'] = loss_bbox.sum() / num_boxes
 
-        loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
-            box_ops.box_cxcywh_to_xyxy(src_boxes),
-            box_ops.box_cxcywh_to_xyxy(target_boxes)))
+        if self.iou_loss == "giou":
+            loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
+                box_ops.box_cxcywh_to_xyxy(src_boxes),
+                box_ops.box_cxcywh_to_xyxy(target_boxes)))
+        elif self.iou_loss == "diou":
+            loss_giou = torchvision.ops.distance_box_iou_loss(
+                box_ops.box_cxcywh_to_xyxy(src_boxes),
+                box_ops.box_cxcywh_to_xyxy(target_boxes),
+            )
+        elif self.iou_loss == "ciou":
+            loss_giou = torchvision.ops.complete_box_iou_loss(
+                box_ops.box_cxcywh_to_xyxy(src_boxes),
+                box_ops.box_cxcywh_to_xyxy(target_boxes),
+            )
+        else:
+            assert False
         losses['loss_giou'] = loss_giou.sum() / num_boxes
+
+        if self.kl_loss:
+            p1 = 0.5 * torch.exp(-self.log_vars[0])
+            p2 = 0.5 * torch.exp(-self.log_vars[1])
+            loss_kl = compute_kl_loss(target_boxes[:, :2], torch.log((target_boxes[:, 2:] / 2.0)),
+                                      src_boxes[:, :2], torch.log((src_boxes[:, 2:] / 2.0)))
+            losses['loss_giou'] = p1 * losses['loss_giou'] + p2 * loss_kl + self.log_vars[0] + self.log_vars[1]
+            # if self.training:
+            #     print(f"p1/p2={p1},{p2}")
+
         return losses
 
     def loss_masks(self, outputs, targets, indices, num_boxes):
@@ -234,15 +327,15 @@ class SetCriterion(nn.Module):
         # indices = self.matcher(outputs_without_aux, targets)
         # print(indices)
 
-        # num_queries = outputs["pred_logits"].shape[1]
-        # if not self.sparse_target:
-        #     indices = [(torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64), 
-        #                 torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
-        # else:
-        #     indices = [(torch.arange(num_queries, dtype=torch.int64)[(v["code"] > 7).cpu()],
-        #                 torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
+        num_queries = outputs_without_aux["pred_logits"].shape[1]
+        if not self.sparse_target:
+            aligned_indices = [(torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64), 
+                        torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
+        else:
+            aligned_indices = [(torch.arange(num_queries, dtype=torch.int64)[(v["code"] > 7).cpu()],
+                        torch.arange(min(len(v["boxes"]), num_queries), dtype=torch.int64)) for v in targets]
 
-        indices = self.order_matcher(outputs_without_aux, targets)
+        # indices = self.order_matcher(outputs_without_aux, targets)
 
         # print(indices)
         # assert False
@@ -257,13 +350,16 @@ class SetCriterion(nn.Module):
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
+            losses.update(self.get_loss(loss, outputs, targets, aligned_indices, num_boxes))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                # indices = self.matcher(aux_outputs, targets)
-                indices = self.order_matcher(aux_outputs, targets)
+                if i < self.mix_aux_loss:
+                    indices = self.matcher(aux_outputs, targets)
+                else:
+                    indices = aligned_indices
+                # indices = self.order_matcher(aux_outputs, targets)
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -337,7 +433,7 @@ def build(args):
     if args.dataset_file == "coco":
         num_classes = 91
     elif args.dataset_file == "code":
-        num_classes = 1 
+        num_classes = args.num_classes
     elif args.dataset_file == "coco_panoptic":
         # for panoptic, we just add a num_classes that is large enough to hold
         # max_obj_id + 1, but the exact value doesn't really matter
@@ -356,6 +452,7 @@ def build(args):
         num_classes=num_classes,
         num_queries=args.num_queries,
         aux_loss=args.aux_loss,
+        query_embedding=args.query_embedding
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
@@ -377,7 +474,8 @@ def build(args):
         losses += ["masks"]
     criterion = SetCriterion(num_classes, matcher=matcher, weight_dict=weight_dict,
                              eos_coef=args.eos_coef, losses=losses, 
-                             sparse_target=args.sparse_target)
+                             sparse_target=args.sparse_target, mix_aux_loss=args.mix_aux_loss,
+                             kl_loss=args.kl_loss, iou_loss=args.iou_loss)
     criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
     if args.masks:

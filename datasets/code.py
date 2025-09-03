@@ -72,7 +72,10 @@ class ImageCodeDataset(Dataset):
             rects[i] = self.rects[loc[0]]
 
         boxes = rects[code > 7]
-        labels = np.zeros_like(code[code > 7])
+        if self.num_classes == 1:
+            labels = np.zeros_like(code[code > 7])
+        else:
+            labels = code[code > 7] - self.num_classes
 
         boxes = torch.as_tensor(boxes, dtype=torch.float32)
         boxes = box_xyxy_to_cxcywh(boxes)
