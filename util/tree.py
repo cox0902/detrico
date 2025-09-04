@@ -83,6 +83,14 @@ class TreeNode:
         for each in self.children:
             each.parent = self.parent
 
+    def delete_sub(self):
+        for i, each in enumerate(self.parent.children):
+            if each.id == self.id:
+                break
+        self.parent.children = [
+            *self.parent.children[:i], 
+            *self.parent.children[i + 1:]]
+
     def insert(self: "TreeNode", 
                iv, 
                i: int = 0,

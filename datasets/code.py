@@ -14,7 +14,7 @@ class ImageCodeDataset(Dataset):
                  image_path: str,
                  code_path: str,
                  split,
-                 max_drop: float = 0):
+                 mask_rate: float = 0):
         super().__init__()
         self.transform = T.Compose([
             T.ToDtype(torch.float, scale=True),
@@ -23,7 +23,7 @@ class ImageCodeDataset(Dataset):
         ])
         self.debug = []
 
-        self.max_drop = max_drop
+        self.mask_rate = mask_rate
         self.num_classes = 1
 
         self.hi = h5py.File(image_path, "r")
@@ -49,63 +49,76 @@ class ImageCodeDataset(Dataset):
             return self.split[i]
         return i
     
+    def __get_rect(self, image_idx, code_idx):
+        loc = np.where(np.logical_and(
+            self.labels[:, 0] == image_idx,
+            self.labels[:, 1] == code_idx
+        ))
+        assert len(loc[0]) == 1
+        return self.rects[loc[0]]
+    
     def __getitem__(self, index: int) -> Dict:
         w, h = 256, 256
 
         img_idx = code_idx = self.__idx(index)
         # image = torch.from_numpy(self.images[img_idx])
         image = self.images[img_idx]
-        if self.transform is not None:
-            image = torch.from_numpy(image)
-            image = self.transform(image)
 
-        code = self.codes[code_idx]
+        # code = self.codes[code_idx]
 
-        rects = np.stack((np.zeros_like(code, dtype=np.float32), ) * 4, axis=-1)
         ids = self.ids[code_idx]
         ivs = self.codes[code_idx]
 
-        if self.max_drop > 0:
-            # print("src:" + "".join([f"{each:4}" for each in ivs[ivs > 0]]))
-            count = int(self.max_drop * len(code[code > 7]))
-            if 1 < count < len(code[code > 7]):
-                n_drop = np.random.randint(0, count)
-                if n_drop > 0:
-                    tree = TreeNode.build_tree(ivs, ids)
-                    nodes = tree.ravel()
-                    nodes = np.random.choice(nodes[1:], n_drop, replace=False)
-                    for each in nodes:
-                        each.delete()
-                    ivs, ids = tree.build_list_with_mask()
-                    # print("dst:" + "".join([f"{each:4}" for each in ivs]))
+        count = len(ivs[ivs > 7])
 
+        if self.mask_rate > 0 and np.random.rand() < self.mask_rate and count > 2:
+            # print("src:" + "".join([f"{each:4}" for each in ivs[ivs > 0]]))
+            tree = TreeNode.build_tree(ivs, ids)
+            nodes = tree.ravel()
+            nodes = np.random.choice(nodes[2:], 1, replace=False)
+            mask = nodes[0].mask
+            rect = self.__get_rect(img_idx, mask)
+            x0, y0, x1, y1 = rect[0]
+            x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
+            x0 = min(max(0, x0), 255)
+            y0 = min(max(0, y0), 255)
+            x1 = min(max(0, x1), 255)
+            y1 = min(max(0, y1), 255)
+            # print(rect)
+            # print(image)
+            image[:, y0:y1, x0:x1] = 255
+            nodes[0].delete_sub()
+            ivs, ids = tree.build_list_with_mask()
+            # print("dst:" + "".join([f"{each:4}" for each in ivs]))
+            ivs, ids = np.array(ivs), np.array(ids)
+
+        rects = np.stack((np.zeros_like(ivs, dtype=np.float32), ) * 4, axis=-1)
         for i, (each_id, each_iv) in enumerate(zip(ids, ivs)):
             if each_iv <= 7:
                 continue
-            loc = np.where(np.logical_and(
-                self.labels[:, 0] == img_idx,
-                self.labels[:, 1] == each_id
-            ))
-            assert len(loc[0]) == 1, code
-            rects[i] = self.rects[loc[0]]
+            rects[i] = self.__get_rect(img_idx, each_id)
 
-        boxes = rects[code > 7]
+        boxes = rects[ivs > 7]
         if self.num_classes == 1:
-            labels = np.zeros_like(code[code > 7])
+            labels = np.zeros_like(ivs[ivs > 7])
         else:
-            labels = code[code > 7] - 8
+            labels = ivs[ivs > 7] - 8
 
         boxes = torch.as_tensor(boxes, dtype=torch.float32)
         boxes = box_xyxy_to_cxcywh(boxes)
         boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32)
 
+        if self.transform is not None:
+            image = torch.from_numpy(image)
+            image = self.transform(image)
+        
         return image, {
             "boxes": torch.as_tensor(boxes, dtype=torch.float32),
             "labels": torch.as_tensor(labels, dtype=torch.int64),
             "image_id": torch.as_tensor([img_idx], dtype=torch.int64),
             "orig_size": torch.as_tensor([w, h]),
             "size": torch.as_tensor([w, h]),
-            "code": torch.as_tensor(code, dtype=torch.int64)
+            "code": torch.as_tensor(ivs, dtype=torch.int64)
         }
 
 
@@ -113,7 +126,7 @@ def build(image_set, args):
     if image_set == "val":
         image_set = "valid"
     split = np.load(args.split_path)
-    max_drop = 0 if image_set != "train" else args.max_drop
+    mask_rate = 0 if image_set != "train" else args.mask_rate
     dataset = ImageCodeDataset(args.image_path, args.code_path, split[image_set],
-                               max_drop=max_drop)
+                               mask_rate=mask_rate)
     return dataset

@@ -94,7 +94,7 @@ def get_args_parser():
     parser.add_argument("--code-path", type=str)
     parser.add_argument("--split-path", type=str)
     parser.add_argument("--num_classes", type=int)
-    parser.add_argument("--max_drop", default=0, type=float)
+    parser.add_argument("--mask_rate", default=0, type=float)
 
     parser.add_argument('--output_dir', default='',
                         help='path where to save, empty for no saving')
