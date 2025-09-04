@@ -113,7 +113,7 @@ class ImageCodeDataset(Dataset):
             image = self.transform(image)
         
         code = torch.zeros((307, ), dtype=torch.int64)
-        code[:len(ivs)] = ivs
+        code[:len(ivs)] = torch.as_tensor(ivs, dtype=torch.int64)
 
         return image, {
             "boxes": torch.as_tensor(boxes, dtype=torch.float32),
