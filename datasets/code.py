@@ -112,13 +112,16 @@ class ImageCodeDataset(Dataset):
             image = torch.from_numpy(image)
             image = self.transform(image)
         
+        code = torch.zeros((307, ), dtype=torch.int64)
+        code[:len(ivs)] = ivs
+
         return image, {
             "boxes": torch.as_tensor(boxes, dtype=torch.float32),
             "labels": torch.as_tensor(labels, dtype=torch.int64),
             "image_id": torch.as_tensor([img_idx], dtype=torch.int64),
             "orig_size": torch.as_tensor([w, h]),
             "size": torch.as_tensor([w, h]),
-            "code": torch.as_tensor(ivs, dtype=torch.int64)
+            "code": code
         }
 
 
