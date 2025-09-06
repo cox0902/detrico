@@ -249,7 +249,8 @@ class SetCriterion(nn.Module):
                 box_ops.box_cxcywh_to_xyxy(target_boxes),
             )
         else:
-            assert False
+            loss_giou = compute_kl_loss(target_boxes[:, :2], torch.log((target_boxes[:, 2:] / 2.0)),
+                                        src_boxes[:, :2], torch.log((src_boxes[:, 2:] / 2.0)))
         losses['loss_giou'] = loss_giou.sum() / num_boxes
 
         if self.kl_loss:
