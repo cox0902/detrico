@@ -58,6 +58,7 @@ def get_args_parser():
     parser.add_argument('--pre_norm', action='store_true')
     parser.add_argument('--tgt_value_with_pos', action='store_true')
     parser.add_argument('--mem_value_with_pos', action='store_true')
+    parser.add_argument('--mem_without_pos', action='store_true')
 
     # * Segmentation
     parser.add_argument('--masks', action='store_true',

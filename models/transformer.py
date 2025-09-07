@@ -21,7 +21,8 @@ class Transformer(nn.Module):
                  num_decoder_layers=6, dim_feedforward=2048, dropout=0.1,
                  activation="relu", normalize_before=False,
                  return_intermediate_dec=False,
-                 tgt_value_with_pos=False, mem_value_with_pos=False):
+                 tgt_value_with_pos=False, mem_value_with_pos=False,
+                 mem_without_pos=False):
         super().__init__()
 
         encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
@@ -31,7 +32,8 @@ class Transformer(nn.Module):
 
         decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward,
                                                 dropout, activation, normalize_before,
-                                                tgt_value_with_pos, mem_value_with_pos)
+                                                tgt_value_with_pos, mem_value_with_pos,
+                                                mem_without_pos)
         decoder_norm = nn.LayerNorm(d_model)
         self.decoder = TransformerDecoder(decoder_layer, num_decoder_layers, decoder_norm,
                                           return_intermediate=return_intermediate_dec)
@@ -191,7 +193,8 @@ class TransformerDecoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1,
                  activation="relu", normalize_before=False,
-                 tgt_value_with_pos=False, mem_value_with_pos=False):
+                 tgt_value_with_pos=False, mem_value_with_pos=False,
+                 mem_without_pos=False):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
         self.multihead_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
@@ -211,6 +214,7 @@ class TransformerDecoderLayer(nn.Module):
         self.normalize_before = normalize_before
         self.tgt_value_with_pos = tgt_value_with_pos
         self.mem_value_with_pos = mem_value_with_pos
+        self.mem_without_pos = mem_without_pos
 
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
         return tensor if pos is None else tensor + pos
@@ -229,8 +233,9 @@ class TransformerDecoderLayer(nn.Module):
         tgt = v + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
         v = memory if not self.mem_value_with_pos else self.with_pos_embed(memory, pos)
+        k = memory if self.mem_without_pos else self.with_pos_embed(memory, pos)
         tgt2 = self.multihead_attn(query=self.with_pos_embed(tgt, query_pos),
-                                   key=self.with_pos_embed(memory, pos),
+                                   key=k,
                                    value=v, attn_mask=memory_mask,
                                    key_padding_mask=memory_key_padding_mask)[0]
         tgt = tgt + self.dropout2(tgt2)
@@ -292,7 +297,8 @@ def build_transformer(args):
         normalize_before=args.pre_norm,
         return_intermediate_dec=True,
         tgt_value_with_pos=args.tgt_value_with_pos, 
-        mem_value_with_pos=args.mem_value_with_pos
+        mem_value_with_pos=args.mem_value_with_pos,
+        mem_without_pos=args.mem_without_pos
     )
 
 
